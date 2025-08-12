@@ -207,6 +207,11 @@ func NewLlamaServer(gpus discover.GpuInfoList, modelPath string, f *ggml.GGML, a
 		fa = false
 	}
 
+	if f.RequiresFlashAttention() {
+		slog.Info("model requires flash attention")
+		fa = true
+	}
+
 	if fa && !f.SupportsFlashAttention() {
 		slog.Warn("flash attention enabled but not supported by model")
 		fa = false

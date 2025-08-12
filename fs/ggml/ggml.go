@@ -1,7 +1,6 @@
 package ggml
 
 import (
-	"cmp"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -10,6 +9,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/ollama/ollama/format"
 	"github.com/ollama/ollama/fs/util/bufioutil"
 )
 
@@ -675,8 +675,9 @@ func (f GGML) GraphSize(context, batch uint64, numParallel int, kvCacheType stri
 				kv[i] *= context
 			}
 		}
-		fullOffload = 4 * f.KV().HeadCountMax() / cmp.Or(f.KV().HeadCountKVMin(), 1) * kvTotal / 6
-		partialOffload = fullOffload
+
+		// rough estimate of graph size with flash attention on
+		partialOffload = (4*uint64(numParallel) + context>>10 + 110) * format.MebiByte
 	}
 
 	return
@@ -751,13 +752,17 @@ func (llm GGML) VisionGraphSize() (weights, graphSize uint64) {
 
 // SupportsKVCacheType checks if the requested cache type is supported
 func (f GGML) SupportsKVCacheType(cacheType string) bool {
+	if f.KV().Architecture() == "gptoss" {
+		// gptoss uses AttentionWithSinks which is not implemented for quantized cache types
+		// as a result, the operation will be run on the CPU dramatically impacting performance
+		return cacheType == "f16"
+	}
 	return slices.Contains([]string{"f16", "q8_0", "q4_0"}, cacheType)
 }
 
 // SupportsFlashAttention checks if the model supports flash attention
 func (f GGML) SupportsFlashAttention() bool {
-	_, isEmbedding := f.KV()[fmt.Sprintf("%s.pooling_type", f.KV().Architecture())]
-	if isEmbedding {
+	if _, isEmbedding := f.KV()[fmt.Sprintf("%s.pooling_type", f.KV().Architecture())]; isEmbedding {
 		return false
 	}
 
@@ -765,6 +770,11 @@ func (f GGML) SupportsFlashAttention() bool {
 	headCountK := f.KV().EmbeddingHeadCountK()
 	headCountV := f.KV().EmbeddingHeadCountV()
 	return headCountK != 0 && headCountV != 0 && headCountK == headCountV
+}
+
+// RequiresFlashAttention checks if the model requires flash attention
+func (f GGML) RequiresFlashAttention() bool {
+	return f.KV().Architecture() == "gptoss"
 }
 
 // kvCacheBytesPerElement returns the number of bytes per element for a given KV cache type
